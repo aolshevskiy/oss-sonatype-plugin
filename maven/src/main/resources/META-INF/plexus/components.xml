@@ -1,0 +1,8 @@
+<component-set>
+  <components>
+    <component>
+      <role>org.apache.maven.eventspy.EventSpy</role>
+      <implementation>com.github.siasia.EventSpy</implementation>
+    </component>
+  </components>
+</component-set>

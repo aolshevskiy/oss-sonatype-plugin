@@ -1,0 +1,97 @@
+package com.github.siasia
+
+import sbt.{url => _, Node => _, _}
+import Keys._
+import MavenPlugin._
+import scala.xml._
+
+object SonatypePlugin extends Plugin {
+	val sonatypePublishDescriptor = TaskKey[PublishDescriptor]("sonatype-publish-descriptor")
+	val sonatypePublish = TaskKey[Unit]("sonatype-publish")
+	val pomUrl = SettingKey[String]("pom-url")
+	val scm = SettingKey[(String, String, String)]("scm")
+	val developers = SettingKey[Seq[(String, String, String)]]("developers")
+
+	def pomPostProcessTask = (pomPostProcess, pomUrl, scm, licenses, developers) {
+		(pomPostProcess, pomUrl, scm, lics, devs) =>
+			(node: Node) =>
+				node match {
+					case xml: Elem =>
+						val children = Seq(
+							<url>{pomUrl}</url>,
+							scm match {
+								case (conn, dev, url) =>
+								<scm>
+									<connection>{conn}</connection>
+									<developerConnection>{dev}</developerConnection>
+									<url>{url}</url>
+								</scm>
+							},
+							<developers>{devs.map {
+								case (id, name, email) =>
+								<developer>
+									<id>{id}</id>
+									<name>{name}</name>
+									<email>{email}</email>
+								</developer>
+							}}</developers>,
+							<parent>
+							<groupId>org.sonatype.oss</groupId>
+							<artifactId>oss-parent</artifactId>
+							<version>7</version>
+							</parent>
+						)
+					pomPostProcess(xml.copy(child = xml.child ++ children))
+				}
+	}
+
+	def readPassword(prompt: String) = {
+		jline.Terminal.getTerminal().disableEcho()
+		val pwd = new jline.ConsoleReader().readLine(prompt, '*')
+		jline.Terminal.getTerminal().enableEcho()
+		pwd
+	}
+
+	def publishDescriptorTask = (packagedArtifacts) map PublishDescriptor.apply
+
+	def sonatypePublishTask = (streams, sonatypePublishDescriptor) map {
+		(s, descriptor) =>
+		def gpgSignAndDeploy = mavenInvoke(s.log)("gpg:sign-and-deploy-file") _
+		val passphrase = readPassword("GPG passphrase:")
+		def deploy(artifact: File, classifier: Option[String]) = { 
+			val properties = Seq(
+				"url" -> "https://oss.sonatype.org/service/local/staging/deploy/maven2/",
+				"repositoryId" -> "sonatype-nexus-staging",
+				"pomFile" -> descriptor.pom.getPath,
+				"file" -> artifact.getPath,
+				"gpg.passphrase" -> passphrase
+			) ++ classifier.map("classifier" -> _).toList
+			gpgSignAndDeploy(properties :_*)
+		}
+		descriptor.artifacts.foreach {
+			case (artifact, classifier) => deploy(artifact, classifier)
+		}
+	}
+
+	def sonatypeSettings: Seq[Setting[_]] = Seq(
+		publishMavenStyle := true,
+		pomIncludeRepository := ((_) => false),
+		pomPostProcess <<= pomPostProcessTask,
+		nexusUrl <<
+		publishTo <<= (version) {
+			version: String =>
+			val ossSonatype = "https://oss.sonatype.org/"
+			if (version.trim.endsWith("SNAPSHOT"))
+				Some("snapshots" at ossSonatype + "content/repositories/snapshots") 
+			else None
+		},
+		sonatypePublishDescriptor <<= publishDescriptorTask,
+		sonatypePublish <<= sonatypePublishTask,
+		publish <<= (publish.task, sonatypePublish.task, publishTo) flatMap {
+			(pub, sonatype, repo) =>
+			if(repo.isEmpty)
+				sonatype
+			else pub
+		}		
+	) ++ nexusSettings
+}
